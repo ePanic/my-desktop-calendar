@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Desktop Calendar & Reminder App</title>
+    <script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        #error-container {
+            color: orange;
+            font-size: 16px;
+            margin: 12px;
+            min-height: 120px;
+            overflow-y: auto;
+            border: 1px solid orange;
+            padding: 10px;
+            border-radius: 8px;
+            background-color: #ff96000d;
+            display: none;
+        }
+        .drag-over {
+            background-color: #dbeafe !important;
+            border-color: #3b82f6 !important;
+        }
+        .dragging {
+            opacity: 0.5;
+        }
+    </style>
+</head>
+<body>
+    <div id="calendar-app"></div>
+    <div id="error-container"></div>
+    
+    <script type="text/babel">
+        function App() {
+            // Dates & calendar state
+            const [currentDate, setCurrentDate] = React.useState(new Date());
+            const [selectedDate, setSelectedDate] = React.useState(new Date());
+
+            // Data model: todos keyed by dateKey
+            const [todos, setTodos] = React.useState(() => {
+                const saved = localStorage.getItem('advancedCalendarTodos');
+                return saved ? JSON.parse(saved) : {};
+            });
+
+            // UI State
+            const [newTodo, setNewTodo] = React.useState('');
+            const [showAddTodo, setShowAddTodo] = React.useState(false);
+            const [reminderTime, setReminderTime] = React.useState(
+                localStorage.getItem('reminderTime') || '09:00'
+            );
+            const [showNotification, setShowNotification] = React.useState(false);
+            const [notificationMessage, setNotificationMessage] = React.useState('');
+            const [draggingTodo, setDraggingTodo] = React.useState(null);
+
+            // Labels system
+            const defaultLabels = [
+                { id: 'work', name: 'Work', color: '#2563eb' },
+                { id: 'personal', name: 'Personal', color: '#16a34a' },
+                { id: 'urgent', name: 'Urgent', color: '#dc2626' },
+                { id: 'idea', name: 'Idea', color: '#9333ea' },
+                { id: 'health', name: 'Health', color: '#059669' },
+                { id: 'finance', name: 'Finance', color: '#d97706' },
+            ];
+            
+            const [labels, setLabels] = React.useState(() => {
+                const saved = localStorage.getItem('calendarLabels');
+                return saved ? JSON.parse(saved) : defaultLabels;
+            });
+            
+            const [selectedLabels, setSelectedLabels] = React.useState([]);
+            const [customLabelName, setCustomLabelName] = React.useState('');
+            const [customLabelColor, setCustomLabelColor] = React.useState('#0ea5e9');
+
+            // File attachments
+            const [attachmentDrafts, setAttachmentDrafts] = React.useState([]);
+            const EMBED_SIZE_LIMIT = 2 * 1024 * 1024; // 2MB
+
+            // Notification permission
+            const [notificationPermission, setNotificationPermission] = React.useState(
+                typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+            );
+
+            // Persist data to localStorage
+            React.useEffect(() => {
+                localStorage.setItem('advancedCalendarTodos', JSON.stringify(todos));
+            }, [todos]);
+
+            React.useEffect(() => {
+                localStorage.setItem('calendarLabels', JSON.stringify(labels));
+            }, [labels]);
+
+            React.useEffect(() => {
+                localStorage.setItem('reminderTime', reminderTime);
+            }, [reminderTime]);
+
+            // Request notification permission
+            React.useEffect(() => {
+                if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+                    Notification.requestPermission().then(permission => {
+                        setNotificationPermission(permission);
+                    });
+                }
+            }, []);
+
+            // Daily reminder checker
+            React.useEffect(() => {
+                const checkReminders = () => {
+                    const now = new Date();
+                    const todayKey = now.toDateString();
+                    const currentTime = now.toTimeString().slice(0, 5);
+                    
+                    if (todos[todayKey] && todos[todayKey].length > 0 && currentTime >= reminderTime) {
+                        const lastCheck = localStorage.getItem('lastReminderCheck');
+                        const checkKey = `${todayKey}-${currentTime}`;
+                        
+                        if (lastCheck !== checkKey) {
+                            const remaining = todos[todayKey].filter(t => !t.completed).length;
+                            const message = `You have ${remaining || todos[todayKey].length} task${(remaining || todos[todayKey].length) !== 1 ? 's' : ''} for today!`;
+                            
+                            // Show in-app notification
+                            setNotificationMessage(message);
+                            setShowNotification(true);
+                            
+                            // Show system notification if permission granted
+                            if (notificationPermission === 'granted') {
+                                new Notification('Calendar Reminder', {
+                                    body: message,
+                                    icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>'
+                                });
+                            }
+                            
+                            localStorage.setItem('lastReminderCheck', checkKey);
+                        }
+                    }
+                };
+
+                checkReminders();
+                const interval = setInterval(checkReminders, 60000); // Check every minute
+                return () => clearInterval(interval);
+            }, [todos, reminderTime, notificationPermission]);
+
+            // Calendar helper functions
+            const getDaysInMonth = (date) => {
+                const year = date.getFullYear();
+                const month = date.getMonth();
+                const firstDay = new Date(year, month, 1);
+                const lastDay = new Date(year, month + 1, 0);
+                const daysInMonth = lastDay.getDate();
+                const startingDayOfWeek = firstDay.getDay();
+
+                const days = [];
+                
+                // Add empty cells for days before the first day of the month
+                for (let i = 0; i < startingDayOfWeek; i++) {
+                    days.push(null);
+                }
+                
+                // Add all days of the month
+                for (let day = 1; day <= daysInMonth; day++) {
+                    days.push(new Date(year, month, day));
+                }
+                
+                return days;
+            };
+
+            const formatDateKey = (date) => date.toDateString();
+
+            // File handling functions
+            const detectPreviewType = (type) => {
+                if (type.startsWith('image/')) return 'image';
+                if (type.startsWith('video/')) return 'video';
+                if (type.startsWith('audio/')) return 'audio';
+                if (type === 'application/pdf') return 'pdf';
+                return 'file';
+            };
+
+            const handleFilesToDrafts = async (fileList) => {
+                const files = Array.from(fileList || []);
+                
+                for (const file of files) {
+                    const previewType = detectPreviewType(file.type);
+                    const id = `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                    
+                    if (file.size <= EMBED_SIZE_LIMIT) {
+                        // Embed small files as Data URL for persistence
+                        try {
+                            const dataURL = await new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = () => resolve(reader.result);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                            });
+                            
+                            setAttachmentDrafts(prev => [...prev, {
+                                id,
+                                name: file.name,
+                                type: file.type,
+                                size: file.size,
+                                embed: true,
+                                dataURL,
+                                objectURL: null,
+                                previewType
+                            }]);
+                        } catch (error) {
+                            console.error('Error reading file:', error);
+                        }
+                    } else {
+                        // Create object URL for large files (session only)
+                        const objectURL = URL.createObjectURL(file);
+                        setAttachmentDrafts(prev => [...prev, {
+                            id,
+                            name: file.name,
+                            type: file.type,
+                            size: file.size,
+                            embed: false,
+                            dataURL: null,
+                            objectURL,
+                            previewType
+                        }]);
+                    }
+                }
+            };
+
+            // Todo CRUD operations
+            const addTodo = () => {
+                if (!newTodo.trim() && attachmentDrafts.length === 0) return;
+                
+                const dateKey = formatDateKey(selectedDate);
+                const attachmentObjs = attachmentDrafts.map(a => ({
+                    id: a.id,
+                    name: a.name,
+                    type: a.type,
+                    size: a.size,
+                    data: a.embed ? a.dataURL : null,
+                    url: a.embed ? null : a.objectURL,
+                    embed: a.embed,
+                    previewType: a.previewType,
+                }));
+
+                const newItem = {
+                    id: Date.now(),
+                    text: newTodo.trim() || '(Attachment)',
+                    completed: false,
+                    createdAt: new Date().toISOString(),
+                    labels: [],
+                    attachments: attachmentObjs,
+                };
+
+                setTodos(prev => ({
+                    ...prev,
+                    [dateKey]: [...(prev[dateKey] || []), newItem],
+                }));
+
+                setNewTodo('');
+                setShowAddTodo(false);
+                setAttachmentDrafts([]);
+            };
+
+            const toggleTodo = (dateKey, id) => {
+                setTodos(prev => ({
+                    ...prev,
+                    [dateKey]: prev[dateKey].map(t => 
+                        t.id === id ? { ...t, completed: !t.completed } : t
+                    ),
+                }));
+            };
+
+            const deleteTodo = (dateKey, id) => {
+                setTodos(prev => {
+                    const updated = { ...prev };
+                    updated[dateKey] = prev[dateKey].filter(t => t.id !== id);
+                    if (updated[dateKey].length === 0) {
+                        delete updated[dateKey];
+                    }
+                    return updated;
+                });
+            };
+
+            const updateTodoLabels = (dateKey, id, newLabels) => {
+                setTodos(prev => ({
+                    ...prev,
+                    [dateKey]: prev[dateKey].map(t => 
+                        t.id === id ? { ...t, labels: newLabels } : t
+                    ),
+                }));
+            };
+
+            // Drag and drop for todos
+            const onDragStartTodo = (e, todo, dateKey) => {
+                setDraggingTodo({ todo, dateKey });
+                e.dataTransfer.setData('application/json', JSON.stringify({
+                    type: 'todo',
+                    todoId: todo.id,
+                    fromDate: dateKey
+                }));
+                e.dataTransfer.effectAllowed = 'move';
+                e.currentTarget.classList.add('dragging');
+            };
+
+            const onDragEndTodo = (e) => {
+                e.currentTarget.classList.remove('dragging');
+                setDraggingTodo(null);
+            };
+
+            const onDropReorder = (e, targetTodo, dateKey) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('drag-over');
+                
+                const data = e.dataTransfer.getData('application/json');
+                if (!data) return;
+                
+                const { type, todoId, fromDate } = JSON.parse(data);
+                if (type !== 'todo' || fromDate !== dateKey) return;
+
+                setTodos(prev => {
+                    const list = [...(prev[dateKey] || [])];
+                    const movingIndex = list.findIndex(t => t.id === todoId);
+                    const targetIndex = list.findIndex(t => t.id === targetTodo.id);
+                    
+                    if (movingIndex === -1 || targetIndex === -1 || movingIndex === targetIndex) return prev;
+                    
+                    const [moving] = list.splice(movingIndex, 1);
+                    list.splice(targetIndex, 0, moving);
+                    
+                    return { ...prev, [dateKey]: list };
+                });
+            };
+
+            const onDropToDate = (e, date) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove('drag-over');
+                
+                const data = e.dataTransfer.getData('application/json');
+                if (!data || !date) return;
+                
+                const { type, todoId, fromDate } = JSON.parse(data);
+                if (type !== 'todo') return;
+                
+                const toKey = formatDateKey(date);
+                if (fromDate === toKey) return;
+
+                setTodos(prev => {
+                    const fromList = [...(prev[fromDate] || [])];
+                    const todoIndex = fromList.findIndex(t => t.id === todoId);
+                    if (todoIndex === -1) return prev;
+                    
+                    const [moving] = fromList.splice(todoIndex, 1);
+                    const toList = [...(prev[toKey] || [])];
+                    toList.push(moving);
+                    
+                    const updated = { ...prev, [fromDate]: fromList, [toKey]: toList };
+                    if (updated[fromDate].length === 0) {
+                        delete updated[fromDate];
+                    }
+                    return updated;
+                });
+            };
+
+            // Label management
+            const addCustomLabel = () => {
+                const name = customLabelName.trim();
+                if (!name) return;
+                
+                const id = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                if (labels.some(l => l.id === id)) return;
+                
+                setLabels(prev => [...prev, { id, name, color: customLabelColor }]);
+                setCustomLabelName('');
+                setCustomLabelColor('#0ea5e9');
+            };
+
+            const deleteLabel = (labelId) => {
+                if (window.confirm('Delete this label? It will be removed from all tasks.')) {
+                    setLabels(prev => prev.filter(l => l.id !== labelId));
+                    // Remove label from all todos
+                    setTodos(prev => {
+                        const updated = {};
+                        Object.keys(prev).forEach(dateKey => {
+                            updated[dateKey] = prev[dateKey].map(todo => ({
+                                ...todo,
+                                labels: (todo.labels || []).filter(l => l !== labelId)
+                            }));
+                        });
+                        return updated;
+                    });
+                }
+            };
+
+            // Calendar navigation
+            const navigateMonth = (direction) => {
+                setCurrentDate(prev => {
+                    const newDate = new Date(prev);
+                    newDate.setMonth(prev.getMonth() + direction);
+                    return newDate;
+                });
+            };
+
+            const goToToday = () => {
+                const today = new Date();
+                setCurrentDate(today);
+                setSelectedDate(today);
+            };
+
+            // Calendar helper functions
+            const isToday = (date) => {
+                const today = new Date();
+                return date && date.toDateString() === today.toDateString();
+            };
+
+            const isSelected = (date) => {
+                return date && date.toDateString() === selectedDate.toDateString();
+            };
+
+            const hasTodos = (date) => {
+                return date && todos[formatDateKey(date)] && todos[formatDateKey(date)].length > 0;
+            };
+
+            const getDateLabels = (date) => {
+                if (!date) return [];
+                const dateTodos = todos[formatDateKey(date)] || [];
+                const labelIds = dateTodos.flatMap(t => t.labels || []);
+                return [...new Set(labelIds)];
+            };
+
+            // Data for rendering
+            const days = getDaysInMonth(currentDate);
+            const monthNames = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+            const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+            const selectedKey = formatDateKey(selectedDate);
+            let selectedDateTodos = todos[selectedKey] || [];
+            
+            // Apply label filter
+            if (selectedLabels.length > 0) {
+                selectedDateTodos = selectedDateTodos.filter(t => 
+                    t.labels?.some(l => selectedLabels.includes(l))
+                );
+            }
+
+            // UI Components
+            const LabelPill = ({ labelId, showDelete = false, onDelete }) => {
+                const label = labels.find(l => l.id === labelId);
+                if (!label) return null;
+                
+                return (
+                    <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mr-1 mb-1"
+                        style={{ 
+                            background: label.color + '22', 
+                            color: label.color, 
+                            border: `1px solid ${label.color}55` 
+                        }}
+                        title={label.name}
+                    >
+                        <span 
+                            className="w-2 h-2 rounded-full mr-1" 
+                            style={{ background: label.color }}
+                        ></span>
+                        {label.name}
+                        {showDelete && (
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onDelete(labelId);
+                                }}
+                                className="ml-1 text-red-500 hover:text-red-700"
+                            >
+                                ×
+                            </button>
+                        )}
+                    </span>
+                );
+            };
+
+            const formatFileSize = (bytes) => {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            };
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+                    {/* System Notification */}
+                    {showNotification && (
+                        <div className="fixed top-4 right-4 bg-yellow-400 text-black p-4 rounded-lg shadow-lg z-50 animate-bounce">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center">
+                                    <i className="fas fa-bell mr-2"></i>
+                                    {notificationMessage}
+                                </div>
+                                <button 
+                                    onClick={() => setShowNotification(false)}
+                                    className="ml-4 text-black hover:text-gray-700"
+                                >
+                                    <i className="fas fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="max-w-7xl mx-auto">
+                        <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+                            {/* Header */}
+                            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6">
+                                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                                    <h1 className="text-3xl font-bold flex items-center">
+                                        <i className="fas fa-calendar-alt mr-3"></i>
+                                        Advanced Desktop Calendar
+                                    </h1>
+                                    <div className="flex flex-wrap items-center gap-4">
+                                        <div className="flex items-center gap-2">
+                                            <label className="text-sm">Daily Reminder:</label>
+                                            <input
+                                                type="time"
+                                                value={reminderTime}
+                                                onChange={(e) => setReminderTime(e.target.value)}
+                                                className="px-2 py-1 rounded text-black"
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={goToToday}
+                                            className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg transition-colors"
+                                        >
+                                            Today
+                                        </button>
+                                        {notificationPermission === 'denied' && (
+                                            <div className="text-xs bg-red-500/20 px-2 py-1 rounded">
+                                                System notifications disabled
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Month Navigation */}
+                                <div className="flex justify-between items-center mt-4">
+                                    <button 
+                                        onClick={() => navigateMonth(-1)}
+                                        className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                                    >
+                                        <i className="fas fa-chevron-left"></i>
+                                    </button>
+                                    <h2 className="text-2xl font-semibold">
+                                        {monthNames[currentDate.getMonth()]} {currentDate.getFullYear()}
+                                    </h2>
+                                    <button 
+                                        onClick={() => navigateMonth(1)}
+                                        className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+                                    >
+                                        <i className="fas fa-chevron-right"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="flex">
+                                {/* Calendar - Bigger Size */}
+                                <div className="flex-1 p-6">
+                                    {/* Day Headers */}
+                                    <div className="grid grid-cols-7 gap-3 mb-4">
+                                        {dayNames.map(day => (
+                                            <div key={day} className="text-center font-semibold text-gray-600 py-2 text-lg">
+                                                {day}
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Calendar Days - Bigger cells */}
+                                    <div className="grid grid-cols-7 gap-3">
+                                        {days.map((date, index) => (
+                                            <div
+                                                key={index}
+                                                onClick={() => date && setSelectedDate(date)}
+                                                onDragOver={(e) => {
+                                                    if (date) {
+                                                        e.preventDefault();
+                                                        e.currentTarget.classList.add('drag-over');
+                                                    }
+                                                }}
+                                                onDragLeave={(e) => {
+                                                    e.currentTarget.classList.remove('drag-over');
+                                                }}
+                                                onDrop={(e) => onDropToDate(e, date)}
+                                                className={`
+                                                    h-32 p-3 border rounded-xl cursor-pointer transition-all relative select-none
+                                                    ${!date ? 'invisible' : ''}
+                                                    ${isToday(date) ? 'bg-blue-100 border-blue-300 ring-2 ring-blue-200' : 'bg-gray-50 border-gray-200'}
+                                                    ${isSelected(date) ? 'ring-2 ring-blue-500 bg-blue-50' : ''}
+                                                    ${date ? 'hover:bg-blue-50 hover:border-blue-300' : ''}
+                                                `}
+                                            >
+                                                {date && (
+                                                    <>
+                                                        <div className="flex justify-between items-start">
+                                                            <div className="font-semibold text-gray-800 text-lg">
+                                                                {date.getDate()}
+                                                            </div>
+                                                            {hasTodos(date) && (
+                                                                <div className="flex -space-x-1">
+                                                                    <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                                                                    <span className="w-2 h-2 bg-yellow-500 rounded-full"></span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        
+                                                        {/* Label indicators */}
+                                                        <div className="mt-1 flex flex-wrap">
+                                                            {getDateLabels(date).slice(0, 4).map(labelId => {
+                                                                const label = labels.find(l => l.id === labelId);
+                                                                return label ? (
+                                                                    <span 
+                                                                        key={labelId}
+                                                                        className="w-3 h-3 rounded-full mr-1 mb-1" 
+                                                                        style={{ background: label.color }}
+                                                                        title={label.name}
+                                                                    ></span>
+                                                                ) : null;
+                                                            })}
+                                                            {getDateLabels(date).length > 4 && (
+                                                                <span className="text-xs text-gray-500">+{getDateLabels(date).length - 4}</span>
+                                                            )}
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    
+                                    {/* Drag hint */}
+                                    <div className="text-sm text-gray-500 mt-4 text-center">
+                                        💡 Drag tasks between dates • Drop files to attach • Use labels to organize
+                                    </div>
+                                </div>
+
+                                {/* Enhanced Sidebar */}
+                                <div className="w-[450px] bg-gray-50 p-6 border-l">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-2xl font-semibold text-gray-800">
+                                            {selectedDate.toDateString()}
+                                        </h3>
+                                        <button
+                                            onClick={() => setShowAddTodo(true)}
+                                            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center"
+                                        >
+                                            <i className="fas fa-plus mr-2"></i> Add Task
+                                        </button>
+                                    </div>
+
+                                    {/* Label Management */}
+                                    <div className="mb-4 p-4 bg-white rounded-lg border">
+                                        <div className="text-sm font-medium mb-2 flex items-center justify-between">
+                                            <span>Labels</span>
+                                            <span className="text-xs text-gray-500">{labels.length} total</span>
+                                        </div>
+                                        
+                                        {/* Existing labels */}
+                                        <div className="flex flex-wrap gap-1 mb-3">
+                                            {labels.map(label => (
+                                                <LabelPill 
+                                                    key={label.id} 
+                                                    labelId={label.id} 
+                                                    showDelete={!defaultLabels.some(d => d.id === label.id)}
+                                                    onDelete={deleteLabel}
+                                                />
+                                            ))}
+                                        </div>
+                                        
+                                        {/* Add new label */}
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="text"
+                                                className="flex-1 p-2 border rounded text-sm"
+                                                placeholder="New label name"
+                                                value={customLabelName}
+                                                onChange={(e) => setCustomLabelName(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && addCustomLabel()}
+                                            />
+                                            <input 
+                                                type="color" 
+                                                value={customLabelColor} 
+                                                onChange={(e) => setCustomLabelColor(e.target.value)}
+                                                className="w-8 h-8 border rounded"
+                                            />
+                                            <button 
+                                                onClick={addCustomLabel}
+                                                className="px-3 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                                            >
+                                                Add
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Label Filter */}
+                                    <div className="mb-4 p-3 bg-white rounded-lg border">
+                                        <div className="text-sm font-medium mb-2">Filter by Labels</div>
+                                        <div className="flex flex-wrap gap-1">
+                                            {labels.map(label => (
+                                                <button
+                                                    key={label.id}
+                                                    onClick={() => setSelectedLabels(prev => 
+                                                        prev.includes(label.id) 
+                                                            ? prev.filter(x => x !== label.id)
+                                                            : [...prev, label.id]
+                                                    )}
+                                                    className={`px-2 py-1 rounded-full text-xs border transition-all ${
+                                                        selectedLabels.includes(label.id) 
+                                                            ? 'ring-2 ring-offset-1' 
+                                                            : 'hover:bg-gray-100'
+                                                    }`}
+                                                    style={{ 
+                                                        borderColor: label.color, 
+                                                        color: label.color,
+                                                        background: selectedLabels.includes(label.id) 
+                                                            ? label.color + '22' 
+                                                            : 'transparent',
+                                                        ringColor: label.color
+                                                    }}
+                                                >
+                                                    {label.name}
+                                                </button>
+                                            ))}
+                                            {selectedLabels.length > 0 && (
+                                                <button 
+                                                    onClick={() => setSelectedLabels([])}
+                                                    className="ml-2 text-xs text-gray-600 underline hover:text-gray-800"
+                                                >
+                                                    Clear Filter
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Add Todo Form */}
+                                    {showAddTodo && (
+                                        <div className="mb-4 p-4 bg-white rounded-lg border shadow-sm">
+                                            <div className="mb-3">
+                                                <input
+                                                    type="text"
+                                                    value={newTodo}
+                                                    onChange={(e) => setNewTodo(e.target.value)}
+                                                    placeholder="Enter your task..."
+                                                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                                    onKeyDown={(e) => e.key === 'Enter' && addTodo()}
+                                                    autoFocus
+                                                />
+                                            </div>
+
+                                            {/* File Attachments */}
+                                            <div className="mb-3">
+                                                <div className="text-sm font-medium mb-2">Attachments</div>
+                                                <div
+                                                    className="border-2 border-dashed rounded-lg p-4 text-center text-gray-600 bg-gray-50 hover:bg-gray-100 transition-colors"
+                                                    onDragOver={(e) => {
+                                                        e.preventDefault();
+                                                        e.currentTarget.classList.add('drag-over');
+                                                    }}
+                                                    onDragLeave={(e) => {
+                                                        e.currentTarget.classList.remove('drag-over');
+                                                    }}
+                                                    onDrop={async (e) => {
+                                                        e.preventDefault();
+                                                        e.currentTarget.classList.remove('drag-over');
+                                                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                                                            await handleFilesToDrafts(e.dataTransfer.files);
+                                                        }
+                                                    }}
+                                                >
+                                                    <i className="fas fa-cloud-upload-alt text-2xl mb-2"></i>
+                                                    <div>
+                                                        Drag & drop files here or{' '}
+                                                        <label className="text-blue-600 underline cursor-pointer hover:text-blue-800">
+                                                            <input
+                                                                type="file"
+                                                                multiple
+                                                                className="hidden"
+                                                                onChange={async (e) => {
+                                                                    await handleFilesToDrafts(e.target.files);
+                                                                    e.target.value = '';
+                                                                }}
+                                                            />
+                                                            browse files
+                                                        </label>
+                                                    </div>
+                                                    <div className="text-xs text-gray-500 mt-1">
+                                                        Files ≤ 2MB are embedded and persist. Larger files are session-only.
+                                                    </div>
+                                                </div>
+
+                                                {/* Attachment Previews */}
+                                                {attachmentDrafts.length > 0 && (
+                                                    <div className="mt-3 grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                                                        {attachmentDrafts.map(attachment => (
+                                                            <div key={attachment.id} className="border rounded-lg p-2 bg-white">
+                                                                <div className="text-xs font-medium truncate mb-1" title={attachment.name}>
+                                                                    {attachment.name}
+                                                                </div>
+                                                                
+                                                                <div className="mb-2">
+                                                                    {attachment.previewType === 'image' && (
+                                                                        <img 
+                                                                            src={attachment.embed ? attachment.dataURL : attachment.objectURL} 
+                                                                            alt={attachment.name}
+                                                                            className="w-full h-20 object-cover rounded"
+                                                                        />
+                                                                    )}
+                                                                    {attachment.previewType === 'video' && (
+                                                                        <video 
+                                                                            src={attachment.embed ? attachment.dataURL : attachment.objectURL}
+                                                                            className="w-full h-20 object-cover rounded"
+                                                                            controls
+                                                                        />
+                                                                    )}
+                                                                    {attachment.previewType === 'audio' && (
+                                                                        <audio 
+                                                                            src={attachment.embed ? attachment.dataURL : attachment.objectURL}
+                                                                            className="w-full"
+                                                                            controls
+                                                                        />
+                                                                    )}
+                                                                    {attachment.previewType === 'file' && (
+                                                                        <div className="flex items-center justify-center h-20 bg-gray-100 rounded">
+                                                                            <i className="fas fa-file text-2xl text-gray-400"></i>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                
+                                                                <div className="flex justify-between items-center text-[10px] text-gray-500">
+                                                                    <span>{formatFileSize(attachment.size)}</span>
+                                                                    <span className={attachment.embed ? 'text-green-600' : 'text-orange-600'}>
+                                                                        {attachment.embed ? 'Embedded' : 'Session-only'}
+                                                                    </span>
+                                                                    <button
+                                                                        onClick={() => setAttachmentDrafts(prev => 
+                                                                            prev.filter(a => a.id !== attachment.id)
+                                                                        )}
+                                                                        className="text-red-500 hover:text-red-700"
+                                                                    >
+                                                                        <i className="fas fa-times"></i>
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="flex gap-2">
+                                                <button 
+                                                    onClick={addTodo}
+                                                    className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition-colors"
+                                                >
+                                                    <i className="fas fa-save mr-1"></i> Save Task
+                                                </button>
+                                                <button
+                                                    onClick={() => {
+                                                        setShowAddTodo(false);
+                                                        setNewTodo('');
+                                                        setAttachmentDrafts([]);
+                                                    }}
+                                                    className="bg-gray-400 text-white px-4 py-2 rounded hover:bg-gray-500 transition-colors"
+                                                >
+                                                    Cancel
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Todo List */}
+                                    <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-2">
+                                        {selectedDateTodos.length === 0 ? (
+                                            <div className="text-center py-8">
+                                                <i className="fas fa-tasks text-4xl text-gray-300 mb-3"></i>
+                                                <p className="text-gray-500">
+                                                    {selectedLabels.length > 0 
+                                                        ? 'No tasks match the selected labels' 
+                                                        : 'No tasks for this day'
+                                                    }
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            selectedDateTodos.map(todo => (
+                                                <div
+                                                    key={todo.id}
+                                                    className={`p-4 bg-white rounded-lg border shadow-sm transition-all ${
+                                                        todo.completed ? 'opacity-60' : ''
+                                                    }`}
+                                                    draggable
+                                                    onDragStart={(e) => onDragStartTodo(e, todo, selectedKey)}
+                                                    onDragEnd={onDragEndTodo}
+                                                    onDragOver={(e) => {
+                                                        e.preventDefault();
+                                                        e.currentTarget.classList.add('drag-over');
+                                                    }}
+                                                    onDragLeave={(e) => {
+                                                        e.currentTarget.classList.remove('drag-over');
+                                                    }}
+                                                    onDrop={(e) => onDropReorder(e, todo, selectedKey)}
+                                                >
+                                                    <div className="flex items-start justify-between mb-2">
+                                                        <div className="flex items-start flex-1">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={todo.completed}
+                                                                onChange={() => toggleTodo(selectedKey, todo.id)}
+                                                                className="mr-3 mt-1"
+                                                            />
+                                                            <div className="flex-1">
+                                                                <div className={`font-medium ${
+                                                                    todo.completed 
+                                                                        ? 'line-through text-gray-500' 
+                                                                        : 'text-gray-800'
+                                                                }`}>
+                                                                    {todo.text}
+                                                                </div>
+                                                                <div className="text-xs text-gray-500 mt-1">
+                                                                    Created: {new Date(todo.createdAt).toLocaleString()}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <i className="fas fa-grip-vertical text-gray-400 cursor-move" title="Drag to reorder"></i>
+                                                            <button
+                                                                onClick={() => deleteTodo(selectedKey, todo.id)}
+                                                                className="text-red-500 hover:text-red-700 transition-colors"
+                                                                title="Delete task"
+                                                            >
+                                                                <i className="fas fa-trash"></i>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Labels */}
+                                                    <div className="mb-2 flex flex-wrap items-center">
+                                                        {(todo.labels || []).map(labelId => (
+                                                            <LabelPill key={labelId} labelId={labelId} />
+                                                        ))}
+                                                        <details className="relative">
+                                                            <summary className="list-none text-xs text-blue-600 cursor-pointer hover:text-blue-800">
+                                                                + Label
+                                                            </summary>
+                                                            <div className="absolute z-20 bg-white border rounded-lg shadow-lg p-3 mt-1 w-64 right-0">
+                                                                <div className="text-xs text-gray-600 mb-2">Click to toggle labels</div>
+                                                                <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto">
+                                                                    {labels.map(label => {
+                                                                        const isActive = todo.labels?.includes(label.id);
+                                                                        return (
+                                                                            <button
+                                                                                key={label.id}
+                                                                                className={`px-2 py-1 rounded-full text-xs border transition-all ${
+                                                                                    isActive ? 'ring-2 ring-offset-1' : 'hover:bg-gray-100'
+                                                                                }`}
+                                                                                style={{
+                                                                                    borderColor: label.color,
+                                                                                    color: label.color,
+                                                                                    background: isActive ? label.color + '22' : 'transparent',
+                                                                                    ringColor: label.color
+                                                                                }}
+                                                                                onClick={(e) => {
+                                                                                    e.preventDefault();
+                                                                                    const currentLabels = new Set(todo.labels || []);
+                                                                                    if (currentLabels.has(label.id)) {
+                                                                                        currentLabels.delete(label.id);
+                                                                                    } else {
+                                                                                        currentLabels.add(label.id);
+                                                                                    }
+                                                                                    updateTodoLabels(selectedKey, todo.id, Array.from(currentLabels));
+                                                                                }}
+                                                                            >
+                                                                                {label.name}
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                        </details>
+                                                    </div>
+
+                                                    {/* Attachments */}
+                                                    {todo.attachments && todo.attachments.length > 0 && (
+                                                        <div className="mt-3 grid grid-cols-2 gap-2">
+                                                            {todo.attachments.map(attachment => {
+                                                                const src = attachment.embed ? attachment.data : attachment.url;
+                                                                const isAvailable = !!src;
+                                                                
+                                                                return (
+                                                                    <div key={attachment.id} className="border rounded-lg p-2 bg-gray-50">
+                                                                        <div className="text-xs font-medium truncate mb-1" title={attachment.name}>
+                                                                            {attachment.name}
+                                                                        </div>
+                                                                        
+                                                                        <div className="mb-2">
+                                                                            {!isAvailable && (
+                                                                                <div className="text-xs text-orange-600 bg-orange-50 p-2 rounded">
+                                                                                    File not available (session expired). Reattach if needed.
+                                                                                </div>
+                                                                            )}
+                                                                            
+                                                                            {isAvailable && attachment.previewType === 'image' && (
+                                                                                <img 
+                                                                                    src={src} 
+                                                                                    alt={attachment.name}
+                                                                                    className="w-full h-20 object-cover rounded cursor-pointer"
+                                                                                    onClick={() => window.open(src, '_blank')}
+                                                                                />
+                                                                            )}
+                                                                            
+                                                                            {isAvailable && attachment.previewType === 'video' && (
+                                                                                <video 
+                                                                                    src={src}
+                                                                                    className="w-full h-20 object-cover rounded"
+                                                                                    controls
+                                                                                />
+                                                                            )}
+                                                                            
+                                                                            {isAvailable && attachment.previewType === 'audio' && (
+                                                                                <audio 
+                                                                                    src={src}
+                                                                                    className="w-full"
+                                                                                    controls
+                                                                                />
+                                                                            )}
+                                                                            
+                                                                            {isAvailable && attachment.previewType === 'file' && (
+                                                                                <div className="flex items-center justify-center h-20 bg-gray-100 rounded">
+                                                                                    <i className="fas fa-file text-2xl text-gray-400"></i>
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                        
+                                                                        <div className="flex justify-between items-center text-[10px] text-gray-500">
+                                                                            <span>{formatFileSize(attachment.size)}</span>
+                                                                            <span className={attachment.embed ? 'text-green-600' : 'text-orange-600'}>
+                                                                                {attachment.embed ? 'Embedded' : 'Linked'}
+                                                                            </span>
+                                                                            {isAvailable && (
+                                                                                <a 
+                                                                                    href={src} 
+                                                                                    download={attachment.name}
+                                                                                    target="_blank" 
+                                                                                    rel="noreferrer"
+                                                                                    className="text-blue-600 hover:text-blue-800"
+                                                                                >
+                                                                                    <i className="fas fa-download"></i>
+                                                                                </a>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+
+                                    {/* Statistics */}
+                                    {selectedDateTodos.length > 0 && (
+                                        <div className="mt-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border">
+                                            <div className="text-sm font-medium text-gray-700 mb-2">Daily Summary</div>
+                                            <div className="grid grid-cols-3 gap-4 text-center">
+                                                <div>
+                                                    <div className="text-lg font-bold text-blue-600">{selectedDateTodos.length}</div>
+                                                    <div className="text-xs text-gray-600">Total</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-lg font-bold text-green-600">
+                                                        {selectedDateTodos.filter(t => t.completed).length}
+                                                    </div>
+                                                    <div className="text-xs text-gray-600">Completed</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-lg font-bold text-orange-600">
+                                                        {selectedDateTodos.filter(t => !t.completed).length}
+                                                    </div>
+                                                    <div className="text-xs text-gray-600">Remaining</div>
+                                                </div>
+                                            </div>
+                                            
+                                            {selectedDateTodos.length > 0 && (
+                                                <div className="mt-2">
+                                                    <div className="text-xs text-gray-600 mb-1">Progress</div>
+                                                    <div className="w-full bg-gray-200 rounded-full h-2">
+                                                        <div 
+                                                            className="bg-green-500 h-2 rounded-full transition-all duration-300"
+                                                            style={{ 
+                                                                width: `${(selectedDateTodos.filter(t => t.completed).length / selectedDateTodos.length) * 100}%` 
+                                                            }}
+                                                        ></div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Footer Info */}
+                        <div className="mt-4 text-xs text-gray-500 bg-white/50 rounded-lg p-3">
+                            <div className="flex flex-wrap gap-4 justify-center">
+                                <span>💾 Data saved locally in your browser</span>
+                                <span>🔔 System notifications supported</span>
+                                <span>📁 Files ≤ 2MB embedded permanently</span>
+                                <span>🏷️ Unlimited custom labels</span>
+                                <span>🖱️ Drag & drop to organize</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        try {
+            ReactDOM.render(<App />, document.getElementById('calendar-app'));
+        } catch(error) {
+            displayError('An error occurred while loading the calendar application.');
+            console.error(error);
+        }
+
+        window.addEventListener('error', function(event) {
+            displayError(event.message, event.error?.stack);
+        });
+
+        function displayError(message, stackInfo) {
+            const errorContainer = document.getElementById('error-container');
+            const errorMessage = document.createElement('div');
+            errorMessage.textContent = message;
+            errorContainer.appendChild(errorMessage);
+            if(stackInfo) {
+                const stackErrorMessage = document.createElement('pre');
+                stackErrorMessage.textContent = stackInfo.substring(0, 200);
+                errorContainer.appendChild(stackErrorMessage);
+            }
+            errorContainer.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
